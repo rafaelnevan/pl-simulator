@@ -26,21 +26,50 @@ teams = {
     "Hull": 1.0,
 }
 
-LEAGUE_AVG = 1.20
+matches = pd.read_csv("E0.csv")
+
+#fix spelling
+matches["HomeTeam"] = matches["HomeTeam"].replace({"Nott'm Forest": "Nottingham Forest"})
+matches["AwayTeam"] = matches["AwayTeam"].replace({"Nott'm Forest": "Nottingham Forest"})
+
+league_avg = (matches["FTHG"].sum() + matches["FTAG"].sum()) / (2 * len(matches))
 HOME_ADV = 1.21
 
+scored, conceded, played = defaultdict(int), defaultdict(int), defaultdict(int)
+for _, m in matches.iterrows():
+    home, away = m["HomeTeam"], m["AwayTeam"]
+    scored[home]   += m["FTHG"]
+    conceded[home] += m["FTAG"]
+    played[home]   += 1
+    scored[away]   += m["FTAG"]
+    conceded[away] += m["FTHG"]
+    played[away]   += 1
+
+ratings = {t: ((scored[t] / played[t]) / league_avg,
+            (conceded[t] / played[t]) / league_avg) for t in scored}
+
+promoted_by_strength = ["Coventry", "Ipswich", "Hull"]
+relegated_by_strength = sorted(["West Ham", "Burnley", "Wolves"],
+                               key=lambda t: (ratings[t][0] / ratings[t][1]), 
+                               reverse=True)
+
+for promoted, relegated in zip(promoted_by_strength, relegated_by_strength):
+    ratings[promoted] = ratings[relegated]
+    print(f"{promoted:<10} inherits {relegated:<10} -> "
+          f"attack {ratings[relegated][0]:.2f}, defense {ratings[relegated][1]:.2f}")
+
+print(f"\nLeague avg goals/team/game: {league_avg:.2f}")
+print("Top attacks (real data):")
+for t in sorted(ratings, key=lambda x: ratings[x][0], reverse=True)[:5]:
+    print(f"  {t:<18} attack {ratings[t][0]:.2f}  defense {ratings[t][1]:.2f}")
+
 def simulate_match(home, away):
-    home_strength = teams[home]
-    away_strength = teams[away]
-
-    # Expected goals = your attack, scaled by how leaky the opponent is, plus a home bump for the home side.
-    home_exp = home_strength * (LEAGUE_AVG / away_strength) * HOME_ADV
-    away_exp = away_strength * (LEAGUE_AVG / home_strength)
-
-    #Poisson turn each expected value into an actual scoreline.
-    home_goals = np.random.poisson(home_exp)
-    away_goals = np.random.poisson(away_exp)
-    return home_goals, away_goals
+    home_att, home_def = ratings[home]
+    away_att, away_def = ratings[away]
+    # expected goals = your attack × opponent's defense × league scoring level
+    home_exp = home_att * away_def * league_avg * (HOME_ADV ** 0.5)
+    away_exp = away_att * home_def * league_avg / (HOME_ADV ** 0.5)
+    return np.random.poisson(home_exp), np.random.poisson(away_exp)
 
 def generate_fixtures():
     return [(home, away) for home in teams for away in teams if home != away]

@@ -1,6 +1,7 @@
 # simulator.py — Premier League 2026-27 season simulator
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from collections import defaultdict
 
 teams = {
@@ -167,6 +168,29 @@ def run_monte_carlo(n_seasons=10000):
     df = pd.DataFrame(rows).sort_values("Title %", ascending=False).reset_index(drop=True)
     df.index = df.index + 1
     print("\n" + df.round(1).to_string())
+    return df
+
+def plot_results(df):
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(13, 6))
+
+    title = df.sort_values("Title %", ascending=False).head(8).iloc[::-1]
+    ax1.barh(title["Team"], title["Title %"], color="blue")
+    ax1.set_title("Title-winning probability")
+    ax1.set_xlabel("Probability (%)")
+    for i, v in enumerate(title["Title %"]):
+        ax1.text(v + 0.3, i, f"{v:.1f}%", va="center")
+
+    relegation = df.sort_values("Relegation %", ascending=False).head(8).iloc[::-1]
+    ax2.barh(relegation["Team"], relegation["Relegation %"], color="red")
+    ax2.set_title("Relegation probability")
+    ax2.set_xlabel("Probability (%)")
+    for i, v in enumerate(relegation["Relegation %"]):
+        ax2.text(v + 0.3, i, f"{v:.1f}%", va="center")
+
+    fig.suptitle("Premier League 2026-27: 10,000 Simulation Results", fontsize=16)
+    fig.tight_layout()
+    plt.savefig("results.png", dpi = 120)
+    plt.show()
 
 def diagnostics(n_seasons=10000):
     home_wins = draws = away_wins = total_goals = total_matches = 0
@@ -197,4 +221,5 @@ def diagnostics(n_seasons=10000):
     print(f"Champion points:   {champ_points / n_seasons:.1f}    (real ≈ 88)")
     print(f"Last-place points: {last_points / n_seasons:.1f}    (real ≈ 22)")
 
-diagnostics()
+results = run_monte_carlo(10000)
+plot_results(results)

@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from math import exp, factorial, log
 from collections import defaultdict
 
 teams = {
@@ -27,11 +28,17 @@ teams = {
     "Hull": 1.0,
 }
 
-matches = pd.read_csv("E0.csv")
+NAME_FIXES = {"Nott'm Forest": "Nottingham Forest"}
 
-#fix spelling
-matches["HomeTeam"] = matches["HomeTeam"].replace({"Nott'm Forest": "Nottingham Forest"})
-matches["AwayTeam"] = matches["AwayTeam"].replace({"Nott'm Forest": "Nottingham Forest"})
+def load_matches(path):
+    df = pd.read_csv(path)
+    df = df.dropna(subset=["FTR"])               # skip any rows without a result yet
+    for col in ("HomeTeam", "AwayTeam"):
+        df[col] = df[col].replace(NAME_FIXES)
+    return df
+
+matches      = load_matches("E0.csv")            # 2025/26: training data
+matches_2627 = load_matches("E0_2627.csv")       # 2026/27 so far: test data
 
 league_avg = (matches["FTHG"].sum() + matches["FTAG"].sum()) / (2 * len(matches))
 HOME_ADV = 1.21
@@ -59,18 +66,100 @@ for promoted, relegated in zip(promoted_by_strength, relegated_by_strength):
     print(f"{promoted:<10} inherits {relegated:<10} -> "
           f"attack {ratings[relegated][0]:.2f}, defense {ratings[relegated][1]:.2f}")
 
+unknown = (set(matches_2627["HomeTeam"]) | set(matches_2627["AwayTeam"])) - set(ratings)
+if unknown:
+    print(f"WARNING: 26/27 names not recognised: {unknown}")
+
 print(f"\nLeague avg goals/team/game: {league_avg:.2f}")
 print("Top attacks (real data):")
 for t in sorted(ratings, key=lambda x: ratings[x][0], reverse=True)[:5]:
     print(f"  {t:<18} attack {ratings[t][0]:.2f}  defense {ratings[t][1]:.2f}")
 
-def simulate_match(home, away):
+def expected_goals(home, away):
     home_att, home_def = ratings[home]
     away_att, away_def = ratings[away]
-    # expected goals = your attack × opponent's defense × league scoring level
-    home_exp = home_att * away_def * league_avg * (HOME_ADV ** 0.5)
-    away_exp = away_att * home_def * league_avg / (HOME_ADV ** 0.5)
+    hfa = HOME_ADV ** 0.5                        # split the home effect symmetrically
+    home_exp = home_att * away_def * league_avg * hfa
+    away_exp = away_att * home_def * league_avg / hfa
+    return home_exp, away_exp
+
+def simulate_match(home, away):
+    home_exp, away_exp = expected_goals(home, away)
     return np.random.poisson(home_exp), np.random.poisson(away_exp)
+
+MAX_GOALS = 10
+
+def poisson_pmf(k, lam):
+    return exp(-lam) * lam ** k / factorial(k)
+
+def match_probabilities(home_exp, away_exp):
+    """Expected goals -> P(home win), P(draw), P(away win)."""
+    home_pmf = np.array([poisson_pmf(i, home_exp) for i in range(MAX_GOALS + 1)])
+    away_pmf = np.array([poisson_pmf(j, away_exp) for j in range(MAX_GOALS + 1)])
+    score = np.outer(home_pmf, away_pmf)         # score[i, j] = P(home i, away j)
+    p_home = np.tril(score, -1).sum()            # below diagonal: home scored more
+    p_draw = np.trace(score)                     # diagonal: level
+    p_away = np.triu(score, 1).sum()             # above diagonal: away scored more
+    total = p_home + p_draw + p_away
+    return p_home / total, p_draw / total, p_away / total
+
+def market_probabilities(row, cols):
+    """Bookmaker odds -> implied probabilities, with the overround removed."""
+    inv = np.array([1 / row[c] for c in cols])
+    return tuple(inv / inv.sum())
+
+def brier(pred, actual_idx):
+    actual = [0, 0, 0]
+    actual[actual_idx] = 1
+    return sum((p - a) ** 2 for p, a in zip(pred, actual))
+
+def logloss(pred, actual_idx):
+    return -log(max(pred[actual_idx], 1e-15))    # clip so we never take log(0)
+
+def backtest(test_matches, label):
+    # Use the sharpest odds available in this file
+    odds_sets = [("AvgH", "AvgD", "AvgA"),       # market average (used for both seasons)
+                 ("B365H", "B365D", "B365A")]    # Bet365 as a fallback
+    cols = next((c for c in odds_sets if set(c).issubset(test_matches.columns)), None)
+    if cols is None:
+        raise ValueError(f"No known odds columns in {label}")
+
+    # Baseline: last season's H/D/A split, so it never sees the test results
+    freq = matches["FTR"].value_counts(normalize=True)
+    baseline_p = (freq["H"], freq["D"], freq["A"])
+
+    idx_of = {"H": 0, "D": 1, "A": 2}
+    names = ("Model", "Market", "Baseline")
+    brier_total = {n: 0.0 for n in names}
+    ll = {n: [] for n in names}                  # per-match log-loss, kept for the error bar
+
+    for _, m in test_matches.iterrows():
+        home, away = m["HomeTeam"], m["AwayTeam"]
+        if home not in ratings or away not in ratings:
+            continue
+        if any(pd.isna(m[c]) for c in cols):     # skip matches with missing odds
+            continue
+
+        preds = {
+            "Model":    match_probabilities(*expected_goals(home, away)),
+            "Market":   market_probabilities(m, cols),
+            "Baseline": baseline_p,
+        }
+        idx = idx_of[m["FTR"]]
+        for n, p in preds.items():
+            brier_total[n] += brier(p, idx)
+            ll[n].append(logloss(p, idx))
+
+    n_matches = len(ll["Model"])
+    print(f"\n=== {label}: {n_matches} matches, odds from {cols[0][:-1]} ===")
+    print(f"{'':<10}{'Brier':>9}{'Log-loss':>11}")
+    for n in names:
+        print(f"{n:<10}{brier_total[n] / n_matches:>9.4f}{np.mean(ll[n]):>11.4f}")
+
+    # Is the model-vs-market gap real, or just noise?
+    diff = np.array(ll["Model"]) - np.array(ll["Market"])
+    margin = 1.96 * diff.std(ddof=1) / np.sqrt(n_matches)
+    print(f"Model minus Market log-loss: {diff.mean():+.4f}  (±{margin:.4f}, 95%)")
 
 def generate_fixtures():
     return [(home, away) for home in teams for away in teams if home != away]
@@ -221,5 +310,8 @@ def diagnostics(n_seasons=10000):
     print(f"Champion points:   {champ_points / n_seasons:.1f}    (real ≈ 88)")
     print(f"Last-place points: {last_points / n_seasons:.1f}    (real ≈ 22)")
 
-results = run_monte_carlo(10000)
-plot_results(results)
+#results = run_monte_carlo(10000)
+#plot_results(results)
+
+backtest(matches, "2025/26 (in-sample)")
+backtest(matches_2627, "2026/27 so far (out-of-sample)")

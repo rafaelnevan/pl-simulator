@@ -5,28 +5,14 @@ import matplotlib.pyplot as plt
 from math import exp, factorial, log
 from collections import defaultdict
 
-teams = {
-    "Man City": 2.1,
-    "Arsenal": 2.1,
-    "Liverpool": 2.0,
-    "Chelsea": 1.9,
-    "Newcastle": 1.8,
-    "Man United": 1.7,
-    "Tottenham": 1.7,
-    "Aston Villa": 1.7,
-    "Brighton": 1.6,
-    "Nottingham Forest": 1.5,
-    "Bournemouth": 1.5,
-    "Crystal Palace": 1.5,
-    "Brentford": 1.5,
-    "Fulham": 1.4,
-    "Everton": 1.3,
-    "Leeds": 1.2,
-    "Sunderland": 1.2,
-    "Coventry": 1.1,
-    "Ipswich": 1.1,
-    "Hull": 1.0,
-}
+np.random.seed(42)   # same random numbers every run, so results are reproducible
+
+teams = [
+    "Man City", "Arsenal", "Liverpool", "Chelsea", "Newcastle",
+    "Man United", "Tottenham", "Aston Villa", "Brighton", "Nottingham Forest",
+    "Bournemouth", "Crystal Palace", "Brentford", "Fulham", "Everton",
+    "Leeds", "Sunderland", "Coventry", "Ipswich", "Hull",
+]
 
 NAME_FIXES = {"Nott'm Forest": "Nottingham Forest"}
 
@@ -117,7 +103,7 @@ def logloss(pred, actual_idx):
     return -log(max(pred[actual_idx], 1e-15))    # clip so we never take log(0)
 
 def backtest(test_matches, label):
-    # Use the sharpest odds available in this file
+    # Use the bookmaker average, so both seasons are compared against the same market
     odds_sets = [("AvgH", "AvgD", "AvgA"),       # market average (used for both seasons)
                  ("B365H", "B365D", "B365A")]    # Bet365 as a fallback
     cols = next((c for c in odds_sets if set(c).issubset(test_matches.columns)), None)
@@ -254,7 +240,7 @@ def run_monte_carlo(n_seasons=10000):
         "Avg Pts": total_points[t] / n_seasons,
     } for t in teams]
 
-    df = pd.DataFrame(rows).sort_values("Title %", ascending=False).reset_index(drop=True)
+    df = pd.DataFrame(rows).sort_values("Avg Pts", ascending=False).reset_index(drop=True)
     df.index = df.index + 1
     print("\n" + df.round(1).to_string())
     return df
@@ -310,8 +296,8 @@ def diagnostics(n_seasons=10000):
     print(f"Champion points:   {champ_points / n_seasons:.1f}    (real ≈ 88)")
     print(f"Last-place points: {last_points / n_seasons:.1f}    (real ≈ 22)")
 
-#results = run_monte_carlo(10000)
-#plot_results(results)
-
 backtest(matches, "2025/26 (in-sample)")
 backtest(matches_2627, "2026/27 so far (out-of-sample)")
+
+results = run_monte_carlo(10000)
+plot_results(results)
